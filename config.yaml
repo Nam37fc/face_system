@@ -1,0 +1,42 @@
+collection:
+  num_images: 50
+database:
+  host: localhost
+  port: 5433
+  dbname: face_recognition
+  user: postgres
+  password: '123456'
+camera:
+  index: 0
+  width: 1280
+  height: 720
+  skip_frames: 2
+detection:
+  min_face_size: 60
+  mtcnn_threshold: 0.8
+  svm_threshold: 0.55
+  smoothing_window: 3
+attendance:
+  enabled: true
+  db_path: data/attendance.db
+  snapshots_dir: data/snapshots
+  cooldown_seconds: 30
+  unknown_log: false
+paths:
+  model_svm: models/svm_classifier.pkl
+  embeddings: models/embeddings.pkl
+  data_raw: data/raw
+liveness:
+  enabled: true
+  min_blinks: 1
+  eye_scale_factor: 1.1
+  consecutive_frames: 2
+  timeout_seconds: 15
+dashboard:
+  port: 5000
+  host: 0.0.0.0
+  max_logs_per_page: 50
+telegram:
+  token: 8780154968:AAEVO4Xa7Qf-bc-lqb_g8n4cT2rmUg-dmEE
+  chat_id: '2117468194'
+  enabled: true

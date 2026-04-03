@@ -1,0 +1,15 @@
+{
+    "sqltools.connections": [
+        {
+            "ssh": "Disabled",
+            "previewLimit": 50,
+            "server": "localhost",
+            "port": 5433,
+            "driver": "PostgreSQL",
+            "database": "face_recognition",
+            "username": "postgres",
+            "password": "123456",
+            "name": "face_recognition"
+        }
+    ]
+}
