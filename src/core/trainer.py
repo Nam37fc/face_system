@@ -18,6 +18,14 @@ class ModelTrainer:
         self.data_dir = Path(data_dir)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.facenet = InceptionResnetV1(pretrained="vggface2").eval().to(self.device)
+        
+        # Khởi tạo MTCNN để tự động phát hiện và cắt mặt chuẩn trong huấn luyện
+        from facenet_pytorch import MTCNN
+        self.mtcnn = MTCNN(
+            image_size=160, margin=20, min_face_size=40,
+            thresholds=[0.6, 0.7, 0.7], factor=0.709,
+            keep_all=False, device=self.device
+        )
         AppLogger.info(f"Khởi tạo Trainer trên thiết bị: {self.device}")
 
     @torch.no_grad()
@@ -37,13 +45,22 @@ class ModelTrainer:
             AppLogger.info(f"Đang trích xuất '{person_dir.name}': {len(images)} ảnh")
             for img_path in images:
                 try:
-                    img = Image.open(img_path).convert("RGB").resize((160, 160))
-                    img_t = (torch.from_numpy(np.array(img)).permute(2, 0, 1).float() - 127.5) / 128.0
-                    emb = self.facenet(img_t.unsqueeze(0).to(self.device)).cpu().numpy()
+                    img = Image.open(img_path).convert("RGB")
+                    
+                    # Phát hiện và cắt sát khuôn mặt bằng MTCNN (Khử nhiễu hậu cảnh, tóc, vai áo)
+                    face_tensor = self.mtcnn(img)
+                    if face_tensor is not None:
+                        emb = self.facenet(face_tensor.unsqueeze(0).to(self.device)).cpu().numpy()
+                    else:
+                        # Fallback: Nếu ảnh nghiêng quá sâu không detect được, resize trực tiếp như cũ
+                        resized_img = img.resize((160, 160))
+                        img_t = (torch.from_numpy(np.array(resized_img)).permute(2, 0, 1).float() - 127.5) / 128.0
+                        emb = self.facenet(img_t.unsqueeze(0).to(self.device)).cpu().numpy()
+                        
                     all_embeddings.append(emb)
                     all_labels.append(person_dir.name)
-                except:
-                    AppLogger.warning(f"Lỗi khi đọc ảnh {img_path.name}")
+                except Exception as e:
+                    AppLogger.warning(f"Lỗi khi đọc/trích xuất ảnh {img_path.name}: {e}")
 
         if not all_embeddings:
             raise ModelError("Không có ảnh nào được trích xuất. Hãy thu thập ảnh trước.")
@@ -90,10 +107,22 @@ class ModelTrainer:
         grid = GridSearchCV(pipe, param_grid, cv=cv, n_jobs=-1, verbose=0)
         grid.fit(X, y)
         
+        # Tính toán centroid (mean embedding) cho mỗi người để phục vụ tính Cosine Similarity vật lý khi nhận diện
+        centroids = {}
+        for label_name in set(labels):
+            idxs = [i for i, l in enumerate(labels) if l == label_name]
+            class_embs = X[idxs]
+            # Tính trung bình cộng các embeddings của lớp
+            mean_emb = np.mean(class_embs, axis=0)
+            # Chuẩn hóa L2 để có vector đơn vị chuẩn
+            mean_emb = mean_emb / np.linalg.norm(mean_emb)
+            centroids[label_name] = mean_emb
+
         save_data = {
             "model": grid.best_estimator_,
             "label_encoder": le,
-            "class_names": list(le.classes_)
+            "class_names": list(le.classes_),
+            "centroids": centroids  # Lưu centroids phục vụ tính toán độ tự tin
         }
         
         with open(model_save_path, "wb") as f:

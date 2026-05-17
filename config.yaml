@@ -14,7 +14,7 @@ camera:
 detection:
   min_face_size: 60
   mtcnn_threshold: 0.8
-  svm_threshold: 0.55
+  svm_threshold: 0.15
   smoothing_window: 3
 attendance:
   enabled: true
@@ -37,6 +37,6 @@ dashboard:
   host: 0.0.0.0
   max_logs_per_page: 50
 telegram:
-  token: 8780154968:AAEVO4Xa7Qf-bc-lqb_g8n4cT2rmUg-dmEE
-  chat_id: '2117468194'
+  token: 8514208021:AAFA_t7oILGW3TiDbNZxVaYf2o6mnvTSQ_M
+  chat_id: '1309652896'
   enabled: true

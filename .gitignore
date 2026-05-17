@@ -1,0 +1,61 @@
+# ==========================================
+# Python Virtual Environments
+# ==========================================
+venv/
+.venv/
+env/
+ENV/
+
+# ==========================================
+# Python Cache and Compiled files
+# ==========================================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.ipynb_checkpoints/
+
+# ==========================================
+# Environment Secrets & Configurations
+# ==========================================
+.env
+*.env
+credentials.json
+client_secrets.json
+
+# ==========================================
+# Datasets (Avoid uploading raw face images)
+# ==========================================
+# Loại bỏ các thư mục ca sĩ/người dùng trong data/raw
+data/raw/*/
+# Loại bỏ ảnh chụp snapshot camera khi nhận diện
+data/snapshots/
+# Loại bỏ ảnh tạm thời/ảnh đã xử lý
+data/processed/
+data/temp/
+
+# ==========================================
+# AI Models & Large Binary Weights
+# ==========================================
+models/*.pkl
+models/*.pth
+models/*.onnx
+models/*.h5
+models/*.pb
+
+# ==========================================
+# System & Editor Caches
+# ==========================================
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ==========================================
+# Logs & Database Dumps
+# ==========================================
+*.log
+*.sql
+attendance_logs/

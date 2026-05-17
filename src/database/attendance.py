@@ -2,7 +2,6 @@ import csv
 import time
 import cv2
 import numpy as np
-import os
 from pathlib import Path
 from datetime import datetime, date, timedelta
 from threading import Lock
@@ -12,7 +11,7 @@ from ..services.notifier import TelegramNotifier
 
 class AttendanceLogger:
     """
-    Quản lý nghiệp vụ điểm danh: Ghi log, thống kê, xuất báo cáo.
+    Quản lý nghiệp vụ điểm danh: Ghi log, thống kê, xuất báo cáo sử dụng MongoDB Atlas.
     Thread-safe: dùng Lock cho các thao tác ghi.
     """
 
@@ -48,7 +47,7 @@ class AttendanceLogger:
             return None
 
     def log(self, name: str, confidence: float, frame: np.ndarray = None) -> bool:
-        """Ghi nhận điểm danh vào database + lưu snapshot + bản sao lưu."""
+        """Ghi nhận điểm danh vào MongoDB Atlas + lưu snapshot + bản sao lưu."""
         if name == "Unknown" and not self.log_unknown:
             return False
 
@@ -63,9 +62,8 @@ class AttendanceLogger:
         # 2. Lưu snapshot
         snapshot_file = self._save_snapshot(name, frame) if frame is not None else None
 
-        # 3. Ghi vào PostgreSQL
+        # 3. Ghi vào MongoDB Atlas
         dt = datetime.now()
-        sql = "INSERT INTO attendance (name, timestamp, date, time, confidence, snapshot_path) VALUES (%s, %s, %s, %s, %s, %s)"
         
         with self._lock:
             # Re-check inside lock
@@ -75,18 +73,24 @@ class AttendanceLogger:
             self._last_global_log = now
             self._last_log[name] = now
             
-            conn = self._db.get_connection()
-            if conn:
+            col = self._db.attendance_col
+            if col is not None:
                 try:
-                    with conn.cursor() as cur:
-                        cur.execute(sql, (str(name), dt, dt.date(), dt.time(), float(confidence), snapshot_file))
-                    conn.commit()
+                    doc = {
+                        "name": str(name),
+                        "timestamp": dt,
+                        "date": dt.date().isoformat(),
+                        "time": dt.strftime("%H:%M:%S"),
+                        "confidence": float(confidence),
+                        "snapshot_path": snapshot_file
+                    }
+                    col.insert_one(doc)
                 except Exception as e:
-                    conn.rollback()
-                    AppLogger.error(f"Không thể ghi attendance vào DB: {e}")
+                    AppLogger.error(f"Không thể ghi attendance vào MongoDB: {e}")
                     return False
             else:
-                AppLogger.warning("DB không sẵn sàng, bỏ qua ghi log SQL.")
+                AppLogger.warning("MongoDB không sẵn sàng, bỏ qua ghi log.")
+                return False
 
         # 3. Cập nhật cooldown và thông báo
         self._last_log[name] = now
@@ -101,7 +105,7 @@ class AttendanceLogger:
             else:
                 self.notifier.send_message(msg)
 
-        # 5. Lưu bản sao dự phòng (CSV và LOG)
+        # 5. Lưu bản sao dự phòng (CSV và LOG) để an toàn dữ liệu cục bộ
         self._backup_to_files(name, dt, confidence)
         return True
 
@@ -126,64 +130,100 @@ class AttendanceLogger:
 
     def get_all_logs(self, limit=100) -> list:
         """Lấy danh sách điểm danh mới nhất cho Dashboard."""
-        sql = "SELECT name, TO_CHAR(timestamp, 'DD/MM HH24:MI:SS'), confidence, snapshot_path FROM attendance ORDER BY timestamp DESC LIMIT %s"
-        conn = self._db.get_connection()
-        if not conn: return []
+        col = self._db.attendance_col
+        if col is None:
+            return []
         try:
-            with conn.cursor() as cur:
-                cur.execute(sql, (limit,))
-                return [{"name": r[0], "time": r[1], "confidence": f"{r[2]:.1%}", "snapshot": r[3] or ""} for r in cur.fetchall()]
-        finally:
-            conn.close()
+            cursor = col.find().sort("timestamp", -1).limit(limit)
+            logs = []
+            for r in cursor:
+                ts = r.get("timestamp")
+                time_str = ts.strftime("%d/%m %H:%M:%S") if ts else ""
+                logs.append({
+                    "name": r.get("name"),
+                    "time": time_str,
+                    "confidence": f"{r.get('confidence', 0.0):.1%}",
+                    "snapshot": r.get("snapshot_path") or ""
+                })
+            return logs
+        except Exception as e:
+            AppLogger.error(f"Lỗi lấy logs từ MongoDB: {e}")
+            return []
 
     def get_stats_today(self) -> dict:
         """Thống kê tổng quan ngày hôm nay."""
         today = date.today().isoformat()
-        sql_total = "SELECT COUNT(*), COUNT(DISTINCT name) FROM attendance WHERE date = %s"
-        sql_breakdown = "SELECT name, COUNT(*) as count, TO_CHAR(MAX(time), 'HH24:MI') as last_seen FROM attendance WHERE date = %s GROUP BY name ORDER BY last_seen DESC"
-        
-        conn = self._db.get_connection()
-        if not conn: return {"total": 0, "persons": 0, "date": today, "breakdown": []}
+        col = self._db.attendance_col
+        if col is None:
+            return {"total": 0, "persons": 0, "date": today, "breakdown": []}
         try:
-            with conn.cursor() as cur:
-                cur.execute(sql_total, (today,))
-                total, persons = cur.fetchone()
-                cur.execute(sql_breakdown, (today,))
-                breakdown = [{"name": r[0], "count": r[1], "last_seen": r[2]} for r in cur.fetchall()]
-            return {"total": total or 0, "persons": persons or 0, "date": today, "breakdown": breakdown}
-        finally:
-            conn.close()
+            total = col.count_documents({"date": today})
+            distinct_names = col.distinct("name", {"date": today})
+            persons = len(distinct_names)
+            
+            # Breakdown: group by name, count logs, and get max time
+            pipeline = [
+                {"$match": {"date": today}},
+                {"$group": {
+                    "_id": "$name",
+                    "count": {"$sum": 1},
+                    "last_seen_dt": {"$max": "$timestamp"}
+                }},
+                {"$sort": {"last_seen_dt": -1}}
+            ]
+            breakdown = []
+            for r in col.aggregate(pipeline):
+                last_seen_dt = r.get("last_seen_dt")
+                last_seen_str = last_seen_dt.strftime("%H:%M") if last_seen_dt else ""
+                breakdown.append({
+                    "name": r["_id"],
+                    "count": r["count"],
+                    "last_seen": last_seen_str
+                })
+            return {"total": total, "persons": persons, "date": today, "breakdown": breakdown}
+        except Exception as e:
+            AppLogger.error(f"Lỗi thống kê ngày hôm nay từ MongoDB: {e}")
+            return {"total": 0, "persons": 0, "date": today, "breakdown": []}
 
     def get_daily_stats(self, days=7) -> list:
         """Thống kê 7 ngày gần nhất cho biểu đồ."""
         res = []
-        conn = self._db.get_connection()
-        if not conn: return []
+        col = self._db.attendance_col
+        if col is None:
+            return []
         try:
-            with conn.cursor() as cur:
-                for i in range(days-1, -1, -1):
-                    d = (date.today() - timedelta(days=i)).isoformat()
-                    cur.execute("SELECT COUNT(*), COUNT(DISTINCT name) FROM attendance WHERE date = %s", (d,))
-                    total, persons = cur.fetchone()
-                    res.append({"date": d, "total": total or 0, "persons": persons or 0})
+            for i in range(days-1, -1, -1):
+                d = (date.today() - timedelta(days=i)).isoformat()
+                total = col.count_documents({"date": d})
+                distinct_names = col.distinct("name", {"date": d})
+                persons = len(distinct_names)
+                res.append({"date": d, "total": total, "persons": persons})
             return res
-        finally:
-            conn.close()
+        except Exception as e:
+            AppLogger.error(f"Lỗi thống kê 7 ngày từ MongoDB: {e}")
+            return []
 
     def export_csv(self, output_dir: str = "data") -> str:
         """Xuất toàn bộ lịch sử điểm danh ra CSV."""
         out_path = Path(output_dir) / "attendance_export.csv"
-        sql = "SELECT id, name, timestamp, confidence FROM attendance ORDER BY timestamp DESC"
-        conn = self._db.get_connection()
-        if not conn: return ""
+        col = self._db.attendance_col
+        if col is None:
+            return ""
         try:
-            with conn.cursor() as cur:
-                cur.execute(sql)
-                rows = cur.fetchall()
-                with open(out_path, "w", encoding="utf-8", newline="") as f:
-                    writer = csv.writer(f)
-                    writer.writerow(["ID", "Name", "Timestamp", "Confidence"])
-                    writer.writerows(rows)
+            cursor = col.find().sort("timestamp", -1)
+            with open(out_path, "w", encoding="utf-8", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["ID", "Name", "Timestamp", "Confidence"])
+                for r in cursor:
+                    ts = r.get("timestamp")
+                    ts_str = ts.strftime("%Y-%m-%d %H:%M:%S") if ts else ""
+                    writer.writerow([
+                        str(r.get("_id")),
+                        r.get("name"),
+                        ts_str,
+                        r.get("confidence")
+                    ])
             return str(out_path)
-        finally:
-            conn.close()
+        except Exception as e:
+            AppLogger.error(f"Lỗi xuất CSV từ MongoDB: {e}")
+            return ""
