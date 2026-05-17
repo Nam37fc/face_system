@@ -198,6 +198,18 @@ class LivenessDetector:
         root_dir = Path(__file__).parent.parent.parent
         model_path = root_dir / "models" / "face_landmarker.task"
         
+        # Tự động tải file face_landmarker.task từ Google Storage nếu bị thiếu
+        if not model_path.exists():
+            model_path.parent.mkdir(parents=True, exist_ok=True)
+            AppLogger.info("Không tìm thấy file face_landmarker.task. Đang tự động tải từ máy chủ Google...")
+            try:
+                import urllib.request
+                url = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
+                urllib.request.urlretrieve(url, str(model_path))
+                AppLogger.success("Đã tải thành công face_landmarker.task!")
+            except Exception as e:
+                AppLogger.error(f"Lỗi tải face_landmarker.task tự động: {e}")
+        
         base_options = python.BaseOptions(model_asset_path=str(model_path))
         options = vision.FaceLandmarkerOptions(
             base_options=base_options,
